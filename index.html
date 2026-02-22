@@ -1,0 +1,167 @@
+<html>
+<head>
+    <title>Weather Map</title>
+    <script src="https://unpkg.com/maplibre-gl@^5.12.0/dist/maplibre-gl.js"></script>
+    <link href="https://unpkg.com/maplibre-gl@^5.12.0/dist/maplibre-gl.css" rel="stylesheet" />
+    <style>
+        html, body { margin:0; height:100%; width:100%; background:black; color:white; }
+        #map { position:absolute; width:100%; height:100%; }
+        .panel {
+            position:absolute; top:12px; left:12px; background:rgba(0,0,0,0.6);
+            padding:14px; border-radius:10px; max-width:260px; backdrop-filter:blur(8px);
+        }
+        h3 { margin-top:0; font-size:16px; }
+        .layer-buttons button {
+            display:inline-block; margin:3px 4px; background:#222; color:white;
+            border:1px solid #444; padding:6px 10px; border-radius:6px; cursor:pointer;
+            transition:0.2s; font-size:13px;
+        }
+        .layer-buttons button.active { background:#0078ff; border-color:#0078ff; }
+        .search { display:flex; margin-top:8px; }
+        .search input { flex:1; border:none; border-radius:6px 0 0 6px; padding:6px; outline:none; }
+        .search button { background:#0078ff; color:white; border:none; border-radius:0 6px 6px 0; padding:6px 10px; cursor:pointer; }
+        .slider { width:100%; margin-top:8px; }
+        .legend {
+            position:absolute; bottom:10px; left:10px; background:rgba(0,0,0,0.6);
+            border-radius:6px; padding:6px 10px; font-size:12px; backdrop-filter:blur(8px);
+        }
+        .legend-bar {
+            height:8px; width:220px; background:linear-gradient(to right,#2c7bb6,#abd9e9,#ffffbf,#fdae61,#d7191c);
+            border-radius:4px; margin-top:4px;
+        }
+        .popup { color:black; font-size:14px; }
+    </style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="panel">
+    <h3>Weather Layers</h3>
+    <div class="layer-buttons" id="layerButtons"></div>
+
+    <label>Opacity: <span id="opacityVal">0.6</span></label>
+    <input type="range" id="opacity" min="0" max="1" step="0.1" value="0.6" class="slider" />
+
+    <div class="search">
+        <input type="text" id="city" placeholder="Search City..." />
+        <button id="search">Search</button>
+    </div>
+</div>
+
+<div class="legend">
+    <strong>Temperature (°C)</strong>
+    <div class="legend-bar"></div>
+    <div style="display:flex; justify-content:space-between;"><span>-20</span><span>+40</span></div>
+</div>
+
+<script>
+const MAPTILER_KEY = "Bcr86pdYVoAbtvbshQSU";
+const OPEN_WEATHER_KEY = "0c464b99d129d30ac6082cf538e364c1";
+
+const map = new maplibregl.Map({
+    container: 'map',
+    style: `https://api.maptiler.com/maps/streets/style.json?key=${MAPTILER_KEY}`,
+    center: [0, 0],
+    zoom: 2
+});
+map.addControl(new maplibregl.NavigationControl(), "top-right");
+map.addControl(new maplibregl.AttributionControl({compact:true, customAttribution:'Weather data © OpenWeather'}));
+
+const layers = [
+    {id:"temp", label:"Temp", tile:"temp_new"},
+    {id:"clouds", label:"Clouds", tile:"clouds_new"},
+    {id:"wind", label:"Wind", tile:"wind_new"},
+    {id:"precipitation", label:"Rain", tile:"precipitation_new"},
+    {id:"snow", label:"Snow", tile:"snow_new"},
+    {id:"pressure", label:"Pressure", tile:"pressure_new"},
+    {id:"pressureLines", label:"Pressure Lines", tile:"pressure_cntr"},
+];
+
+const opacitySlider = document.getElementById("opacity");
+const opacityVal = document.getElementById("opacityVal");
+const btnContainer = document.getElementById("layerButtons");
+
+// Create layer buttons
+layers.forEach(layer => {
+    const btn = document.createElement("button");
+    btn.textContent = layer.label;
+    btn.id = layer.id;
+    btn.classList.add("active");
+    btnContainer.appendChild(btn);
+});
+
+// Add OpenWeather raster layers
+map.on("load", () => {
+    layers.forEach(layer => {
+        map.addSource(layer.id, {
+            type: "raster",
+            tiles: [`https://tile.openweathermap.org/map/${layer.tile}/{z}/{x}/{y}.png?appid=${OPEN_WEATHER_KEY}`],
+            tileSize: 256,
+            crossOrigin: 'anonymous'
+        });
+        map.addLayer({
+            id: layer.id,
+            type: "raster",
+            source: layer.id,
+            layout: { visibility: "visible" },
+            paint: { "raster-opacity": parseFloat(opacitySlider.value) }
+        });
+    });
+});
+
+// Toggle layer visibility
+btnContainer.addEventListener("click", e => {
+    if(e.target.tagName === "BUTTON") {
+        const id = e.target.id;
+        const isActive = e.target.classList.contains("active");
+        if(map.getLayer(id)) map.setLayoutProperty(id, "visibility", isActive ? "none" : "visible");
+        e.target.classList.toggle("active");
+    }
+});
+
+// Adjust opacity
+opacitySlider.addEventListener("input", e => {
+    const val = parseFloat(e.target.value);
+    opacityVal.textContent = val.toFixed(1);
+    layers.forEach(layer => { if(map.getLayer(layer.id)) map.setPaintProperty(layer.id,"raster-opacity", val); });
+});
+
+// Search city
+document.getElementById("search").addEventListener("click", async () => {
+    const city = document.getElementById("city").value.trim();
+    if(!city) return;
+    try {
+        const res = await fetch(`https://api.openweathermap.org/data/2.5/weather?q=${city}&appid=${OPEN_WEATHER_KEY}&units=metric`);
+        const data = await res.json();
+        if(data.coord){
+            map.flyTo({center:[data.coord.lon, data.coord.lat], zoom:8});
+            showPopupWeather(data.coord.lon, data.coord.lat);
+        } else alert("City not found");
+    } catch { alert("Error fetching weather data"); }
+});
+
+// Map click popup
+map.on("click", e => showPopupWeather(e.lngLat.lng, e.lngLat.lat));
+
+async function showPopupWeather(lon, lat){
+    const popup = new maplibregl.Popup().setLngLat([lon, lat]).setHTML("<div class='popup'>Loading...</div>").addTo(map);
+    try {
+        const res = await fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${OPEN_WEATHER_KEY}&units=metric`);
+        const data = await res.json();
+        popup.setHTML(`
+            <div class="popup">
+                <b>${data.name || "Unknown"}</b><br>
+                Temp: ${data.main.temp} °C<br>
+                Feels like: ${data.main.feels_like} °C<br>
+                Humidity: ${data.main.humidity}%<br>
+                Wind: ${data.wind.speed} m/s<br>
+                Pressure: ${data.main.pressure} hPa<br>
+                Condition: ${data.weather[0].description}<br>
+                <img src="http://openweathermap.org/img/wn/${data.weather[0].icon}@2x.png" />
+            </div>
+        `);
+    } catch { popup.setHTML("<div class='popup'>Failed to fetch weather</div>"); }
+}
+</script>
+</body>
+</html>
